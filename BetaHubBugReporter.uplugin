@@ -1,0 +1,27 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "1.0",
+	"FriendlyName": "BetaHub Bug Reporter",
+	"Description": "Bug reporting functionality for BetaHub.io",
+	"Category": "Other",
+	"CreatedBy": "Upsoft sp. z o. o.",
+	"CreatedByURL": "https://betahub.io/",
+	"DocsURL": "https://betahub.io/docs/permalinks/unreal-plugin",
+	"MarketplaceURL": "",
+	"SupportURL": "https://betahub.io/docs/permalinks/support",
+	"CanContainContent": false,
+	"IsBetaVersion": true,
+	"IsExperimentalVersion": false,
+	"Installed": false,
+	"Modules": [
+		{
+			"Name": "BetaHubBugReporter",
+			"Type": "Runtime",
+			"LoadingPhase": "Default",
+			"WhitelistPlatforms": [
+				"Win64"
+			]
+		}
+	]
+}

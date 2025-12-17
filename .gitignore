@@ -1,0 +1,27 @@
+# Unreal Engine
+Binaries/
+Intermediate/
+
+# Visual Studio
+*.sln
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+
+# Local user settings
+*.opensdf
+*.sdf
+*.suo
+*.user
+*.ipch
+*.aps
+
+# macOS
+.DS_Store
+*.dSYM
+
+# Rider
+.idea/
+
+# VS Code
+.vscode/
