@@ -2,6 +2,8 @@
 
 In-game bug reporting and feedback collection plugin for Unreal Engine 4.27. Integrates with [BetaHub](https://betahub.io) to streamline QA during playtesting.
 
+> **Using Unreal Engine 5+?** Check out the full-featured plugin with video recording support: [github.com/betahub-io/unreal-plugin](https://github.com/betahub-io/unreal-plugin)
+
 ## Features
 
 - **Bug Reports** - Submit issues with automatic screenshot and log capture
