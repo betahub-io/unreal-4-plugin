@@ -10,6 +10,38 @@
 #include "Widgets/SWeakWidget.h"
 #include "Framework/Application/SlateApplication.h"
 
+struct FBH_SavedInputState
+{
+    TWeakObjectPtr<APlayerController> PlayerController;
+    TWeakPtr<SWidget> FocusedWidget;
+    bool bShowMouseCursor = false;
+    bool bIgnoreInput = false;
+    EMouseCaptureMode MouseCaptureMode = EMouseCaptureMode::CapturePermanently;
+    EMouseLockMode MouseLockMode = EMouseLockMode::DoNotLock;
+    bool bHideCursorDuringCapture = false;
+};
+
+namespace
+{
+    // UE 4.27 has no getter for the viewport's mouse lock mode, so rebuild it from the public queries.
+    // LockInFullscreen comes back as LockAlways (fullscreen) or LockOnCapture (windowed),
+    // which behave the same as LockInFullscreen in the current window mode.
+    EMouseLockMode ReadMouseLockMode(UGameViewportClient& ViewportClient)
+    {
+        if (!ViewportClient.LockDuringCapture())
+        {
+            return EMouseLockMode::DoNotLock;
+        }
+        return ViewportClient.ShouldAlwaysLockMouse() ? EMouseLockMode::LockAlways : EMouseLockMode::LockOnCapture;
+    }
+
+    bool CapturesMousePermanently(EMouseCaptureMode Mode)
+    {
+        return Mode == EMouseCaptureMode::CapturePermanently
+            || Mode == EMouseCaptureMode::CapturePermanently_IncludingInitialMouseDown;
+    }
+}
+
 void UBH_Subsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
     Super::Initialize(Collection);
@@ -57,7 +89,9 @@ void UBH_Subsystem::Deinitialize()
         LogCapture = nullptr;
     }
 
-    HideReportForm();
+    // Shutting down: drop the form without restoring input or calling game code.
+    RemoveReportFormWidget();
+    SavedInputState.Reset();
 
     Super::Deinitialize();
 }
@@ -74,12 +108,17 @@ void UBH_Subsystem::ShowReportForm()
     FString ScreenshotPath = BH_ScreenshotCapture::CaptureScreenshot();
     LastScreenshotPath = ScreenshotPath;
 
-    // Remove existing widget if any
-    if (ReportFormWidget.IsValid())
+    // Remember input state before the form changes it. Skipped when re-opening an open form,
+    // which would otherwise save the form's own UI-only state.
+    UWorld* World = GetWorld();
+    APlayerController* PC = World ? World->GetFirstPlayerController() : nullptr;
+    UGameViewportClient* ViewportClient = World ? World->GetGameViewport() : nullptr;
+    if (PC && ViewportClient && !SavedInputState.IsValid())
     {
-        GEngine->GameViewport->RemoveViewportWidgetContent(ReportFormWidget.ToSharedRef());
-        ReportFormWidget.Reset();
+        SaveInputState(PC, *ViewportClient);
     }
+
+    RemoveReportFormWidget();
 
     // Create new Slate widget
     SAssignNew(ReportFormWidget, SBH_ReportForm)
@@ -93,16 +132,13 @@ void UBH_Subsystem::ShowReportForm()
     ReportFormWidget->Show();
 
     // Capture mouse for UI
-    if (UWorld* World = GetWorld())
+    if (PC)
     {
-        if (APlayerController* PC = World->GetFirstPlayerController())
-        {
-            PC->bShowMouseCursor = true;
-            FInputModeUIOnly InputMode;
-            InputMode.SetWidgetToFocus(ReportFormWidget);
-            InputMode.SetLockMouseToViewportBehavior(EMouseLockMode::DoNotLock);
-            PC->SetInputMode(InputMode);
-        }
+        PC->bShowMouseCursor = true;
+        FInputModeUIOnly InputMode;
+        InputMode.SetWidgetToFocus(ReportFormWidget);
+        InputMode.SetLockMouseToViewportBehavior(EMouseLockMode::DoNotLock);
+        PC->SetInputMode(InputMode);
     }
 
     UE_LOG(LogBetaHub, Log, TEXT("Bug report form shown"));
@@ -110,30 +146,100 @@ void UBH_Subsystem::ShowReportForm()
 
 void UBH_Subsystem::HideReportForm()
 {
-    if (ReportFormWidget.IsValid())
+    if (!ReportFormWidget.IsValid())
     {
-        ReportFormWidget->Hide();
-
-        if (GEngine && GEngine->GameViewport)
-        {
-            GEngine->GameViewport->RemoveViewportWidgetContent(ReportFormWidget.ToSharedRef());
-        }
-
-        ReportFormWidget.Reset();
-
-        // Return to game input mode
-        if (UWorld* World = GetWorld())
-        {
-            if (APlayerController* PC = World->GetFirstPlayerController())
-            {
-                PC->bShowMouseCursor = false;
-                FInputModeGameOnly InputMode;
-                PC->SetInputMode(InputMode);
-            }
-        }
-
-        UE_LOG(LogBetaHub, Log, TEXT("Bug report form hidden"));
+        return;
     }
+
+    RemoveReportFormWidget();
+    RestoreInputState();
+
+    UE_LOG(LogBetaHub, Log, TEXT("Bug report form hidden"));
+
+    OnReportFormClosed.Broadcast();
+}
+
+void UBH_Subsystem::RemoveReportFormWidget()
+{
+    if (!ReportFormWidget.IsValid())
+    {
+        return;
+    }
+
+    ReportFormWidget->Hide();
+
+    if (GEngine && GEngine->GameViewport)
+    {
+        GEngine->GameViewport->RemoveViewportWidgetContent(ReportFormWidget.ToSharedRef());
+    }
+
+    ReportFormWidget.Reset();
+}
+
+void UBH_Subsystem::SaveInputState(APlayerController* PlayerController, UGameViewportClient& ViewportClient)
+{
+    SavedInputState = MakeShared<FBH_SavedInputState>();
+    SavedInputState->PlayerController = PlayerController;
+    SavedInputState->bShowMouseCursor = PlayerController->bShowMouseCursor;
+    SavedInputState->bIgnoreInput = ViewportClient.IgnoreInput();
+    SavedInputState->MouseCaptureMode = ViewportClient.GetMouseCaptureMode();
+    SavedInputState->MouseLockMode = ReadMouseLockMode(ViewportClient);
+    SavedInputState->bHideCursorDuringCapture = ViewportClient.HideCursorDuringCapture();
+
+    if (FSlateApplication::IsInitialized())
+    {
+        SavedInputState->FocusedWidget = FSlateApplication::Get().GetKeyboardFocusedWidget();
+    }
+}
+
+void UBH_Subsystem::RestoreInputState()
+{
+    if (!SavedInputState.IsValid())
+    {
+        // The form opened without a player controller, so input was never changed.
+        return;
+    }
+
+    const FBH_SavedInputState State = *SavedInputState;
+    SavedInputState.Reset();
+
+    APlayerController* PC = State.PlayerController.Get();
+    UGameViewportClient* ViewportClient = PC ? PC->GetWorld()->GetGameViewport() : nullptr;
+    if (!ViewportClient)
+    {
+        UE_LOG(LogBetaHub, Warning, TEXT("Player controller or viewport gone while the report form was open - input not restored"));
+        return;
+    }
+
+    PC->bShowMouseCursor = State.bShowMouseCursor;
+
+    // Rebuild the matching standard input mode, so Slate focus and mouse capture are restored too.
+    const TSharedPtr<SWidget> FocusedWidget = State.FocusedWidget.Pin();
+    if (State.bIgnoreInput)
+    {
+        FInputModeUIOnly InputMode;
+        InputMode.SetWidgetToFocus(FocusedWidget);
+        InputMode.SetLockMouseToViewportBehavior(State.MouseLockMode);
+        PC->SetInputMode(InputMode);
+    }
+    else if (CapturesMousePermanently(State.MouseCaptureMode))
+    {
+        FInputModeGameOnly InputMode;
+        InputMode.SetConsumeCaptureMouseDown(State.MouseCaptureMode == EMouseCaptureMode::CapturePermanently);
+        PC->SetInputMode(InputMode);
+    }
+    else
+    {
+        FInputModeGameAndUI InputMode;
+        InputMode.SetWidgetToFocus(FocusedWidget);
+        InputMode.SetLockMouseToViewportBehavior(State.MouseLockMode);
+        InputMode.SetHideCursorDuringCapture(State.bHideCursorDuringCapture);
+        PC->SetInputMode(InputMode);
+    }
+
+    // Input modes set fixed capture and lock modes; put back the exact ones the game had.
+    ViewportClient->SetMouseCaptureMode(State.MouseCaptureMode);
+    ViewportClient->SetMouseLockMode(State.MouseLockMode);
 }
 
 FString UBH_Subsystem::GetCapturedLogs() const

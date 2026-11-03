@@ -20,6 +20,9 @@ public:
 
     void Construct(const FArguments& InArgs);
 
+    // The subsystem focuses the form when it opens; UI-only input mode requires a focusable widget.
+    virtual bool SupportsKeyboardFocus() const override { return true; }
+
     void Show();
     void Hide();
     void ResetForm();

@@ -47,6 +47,14 @@ BugReporter->ShowReportForm();
 FString Logs = BugReporter->GetCapturedLogs();
 ```
 
+**Closing the form:** when the form closes, the plugin restores the mouse cursor and input mode the game had before it opened. Opening it from a pause menu returns the player to the pause menu with the cursor visible.
+
+To run your own logic after the form closes, bind to `OnReportFormClosed` (Blueprint: *Bind Event to On Report Form Closed* on the BH_Subsystem node):
+
+```cpp
+BugReporter->OnReportFormClosed.AddDynamic(this, &UMyPauseMenu::HandleReportFormClosed);
+```
+
 ## Requirements
 
 - Unreal Engine 4.27
