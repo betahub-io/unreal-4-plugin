@@ -42,4 +42,8 @@ public:
     UPROPERTY(EditAnywhere, Config, Category="Settings",
         meta=(ToolTip="The shortcut key to open the bug report form."))
     FKey ShortcutKey;
+
+    UPROPERTY(EditAnywhere, Config, Category="Settings",
+        meta=(ToolTip="Z-order of the report form in the game viewport. The form is drawn above viewport widgets with a lower Z-order. UMG's Add to Viewport places a widget at its Z-order + 10, so to keep the form above a menu added with Z-order N, use a value above N + 10."))
+    int32 ReportFormZOrder;
 };

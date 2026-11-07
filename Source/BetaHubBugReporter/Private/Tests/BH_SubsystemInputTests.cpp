@@ -4,12 +4,15 @@
 #if WITH_DEV_AUTOMATION_TESTS
 
 #include "BH_Subsystem.h"
+#include "BH_PluginSettings.h"
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
 #include "Engine/GameViewportClient.h"
 #include "Engine/World.h"
 #include "GameFramework/Actor.h"
 #include "GameFramework/PlayerController.h"
+#include "Layout/Children.h"
+#include "Widgets/Layout/SBorder.h"
 
 // These tests need a running game world: run them with -game, e.g.
 // UE4Editor.exe <Project>.uproject -game -ExecCmds="Automation RunTests BetaHub;Quit"
@@ -68,6 +71,69 @@ namespace
         Test.TestTrue(TEXT("Cursor visible"), Fixture.PlayerController->bShowMouseCursor);
         Test.TestTrue(TEXT("UI-only input (viewport ignores game input)"), Fixture.ViewportClient->IgnoreInput());
         Test.TestTrue(TEXT("Mouse not captured"), Fixture.ViewportClient->GetMouseCaptureMode() == EMouseCaptureMode::NoCapture);
+    }
+
+    // UMG's AddToViewport(ZOrder) adds the widget to the viewport at ZOrder + 10, so a game menu
+    // added with the default ZOrder 0 lands here.
+    constexpr int32 UmgMenuViewportZOrder = 10;
+
+    const FName ReportFormWidgetType(TEXT("SBH_ReportForm"));
+
+    // Stands in for a game's full-screen menu. Its parent is the viewport overlay, which draws
+    // later slots on top of earlier ones.
+    TSharedRef<SWidget> AddMenuToViewport(UGameViewportClient& ViewportClient, int32 ZOrder)
+    {
+        TSharedRef<SWidget> Menu = SNew(SBorder);
+        ViewportClient.AddViewportWidgetContent(Menu, ZOrder);
+        return Menu;
+    }
+
+    int32 FindOverlaySlot(SWidget& Overlay, const TSharedRef<SWidget>& Widget)
+    {
+        FChildren* Slots = Overlay.GetChildren();
+        for (int32 Index = 0; Index < Slots->Num(); ++Index)
+        {
+            if (Slots->GetChildAt(Index) == Widget)
+            {
+                return Index;
+            }
+        }
+        return INDEX_NONE;
+    }
+
+    // The form is not added to the overlay directly; it sits inside a wrapper widget.
+    int32 FindReportFormOverlaySlot(SWidget& Overlay)
+    {
+        FChildren* Slots = Overlay.GetChildren();
+        for (int32 Index = 0; Index < Slots->Num(); ++Index)
+        {
+            FChildren* WrappedWidgets = Slots->GetChildAt(Index)->GetChildren();
+            if (WrappedWidgets->Num() > 0 && WrappedWidgets->GetChildAt(0)->GetType() == ReportFormWidgetType)
+            {
+                return Index;
+            }
+        }
+        return INDEX_NONE;
+    }
+
+    // Opens the form over a menu at MenuZOrder and returns whether the form is drawn above it.
+    bool IsReportFormAboveMenu(FAutomationTestBase& Test, const FBH_GameFixture& Fixture, int32 MenuZOrder)
+    {
+        const TSharedRef<SWidget> Menu = AddMenuToViewport(*Fixture.ViewportClient, MenuZOrder);
+        Fixture.Subsystem->ShowReportForm();
+
+        bool bFormAbove = false;
+        const TSharedPtr<SWidget> Overlay = Menu->GetParentWidget();
+        if (Test.TestTrue(TEXT("Menu added to the viewport overlay"), Overlay.IsValid()))
+        {
+            const int32 FormSlot = FindReportFormOverlaySlot(*Overlay);
+            Test.TestNotEqual(TEXT("Report form found in the viewport overlay"), FormSlot, static_cast<int32>(INDEX_NONE));
+            bFormAbove = FormSlot > FindOverlaySlot(*Overlay, Menu);
+        }
+
+        Fixture.Subsystem->HideReportForm();
+        Fixture.ViewportClient->RemoveViewportWidgetContent(Menu);
+        return bFormAbove;
     }
 }
 
@@ -159,6 +225,67 @@ bool FBH_CloseBroadcastsEventTest::RunTest(const FString& Parameters)
     {
         Listener->Destroy();
     }
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FBH_FormAboveUmgMenuTest, "BetaHub.ReportForm.DrawnAboveUmgMenu", GameTestFlags)
+
+bool FBH_FormAboveUmgMenuTest::RunTest(const FString& Parameters)
+{
+    FBH_GameFixture Fixture;
+    if (!GetGameFixture(*this, Fixture))
+    {
+        return false;
+    }
+
+    TestTrue(TEXT("Form drawn above a menu added with UMG AddToViewport"), IsReportFormAboveMenu(*this, Fixture, UmgMenuViewportZOrder));
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FBH_FormUsesConfiguredZOrderTest, "BetaHub.ReportForm.UsesConfiguredZOrder", GameTestFlags)
+
+bool FBH_FormUsesConfiguredZOrderTest::RunTest(const FString& Parameters)
+{
+    FBH_GameFixture Fixture;
+    if (!GetGameFixture(*this, Fixture))
+    {
+        return false;
+    }
+
+    UBH_PluginSettings* Settings = GetMutableDefault<UBH_PluginSettings>();
+    const int32 OriginalZOrder = Settings->ReportFormZOrder;
+    Settings->ReportFormZOrder = UmgMenuViewportZOrder - 1;
+
+    TestFalse(TEXT("Form drawn below a menu with a higher ZOrder"), IsReportFormAboveMenu(*this, Fixture, UmgMenuViewportZOrder));
+
+    Settings->ReportFormZOrder = OriginalZOrder;
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FBH_CloseRemovesViewportSlotTest, "BetaHub.ReportForm.CloseRemovesViewportSlot", GameTestFlags)
+
+bool FBH_CloseRemovesViewportSlotTest::RunTest(const FString& Parameters)
+{
+    FBH_GameFixture Fixture;
+    if (!GetGameFixture(*this, Fixture))
+    {
+        return false;
+    }
+
+    // A menu only gives access to the viewport overlay, so its slots can be counted.
+    const TSharedRef<SWidget> Menu = AddMenuToViewport(*Fixture.ViewportClient, UmgMenuViewportZOrder);
+    const TSharedPtr<SWidget> Overlay = Menu->GetParentWidget();
+    if (TestTrue(TEXT("Menu added to the viewport overlay"), Overlay.IsValid()))
+    {
+        const int32 SlotsBeforeOpen = Overlay->GetChildren()->Num();
+
+        Fixture.Subsystem->ShowReportForm();
+        Fixture.Subsystem->HideReportForm();
+
+        TestEqual(TEXT("Viewport overlay slots after the form closes"), Overlay->GetChildren()->Num(), SlotsBeforeOpen);
+    }
+
+    Fixture.ViewportClient->RemoveViewportWidgetContent(Menu);
     return true;
 }
 

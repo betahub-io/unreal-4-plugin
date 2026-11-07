@@ -126,8 +126,10 @@ void UBH_Subsystem::ShowReportForm()
         .Subsystem(this)
         .ScreenshotPath(ScreenshotPath);
 
+    ReportFormViewportContent = SNew(SWeakWidget).PossiblyNullContent(ReportFormWidget);
     GEngine->GameViewport->AddViewportWidgetContent(
-        SNew(SWeakWidget).PossiblyNullContent(ReportFormWidget)
+        ReportFormViewportContent.ToSharedRef(),
+        GetDefault<UBH_PluginSettings>()->ReportFormZOrder
     );
 
     ReportFormWidget->Show();
@@ -169,11 +171,12 @@ void UBH_Subsystem::RemoveReportFormWidget()
 
     ReportFormWidget->Hide();
 
-    if (GEngine && GEngine->GameViewport)
+    if (GEngine && GEngine->GameViewport && ReportFormViewportContent.IsValid())
     {
-        GEngine->GameViewport->RemoveViewportWidgetContent(ReportFormWidget.ToSharedRef());
+        GEngine->GameViewport->RemoveViewportWidgetContent(ReportFormViewportContent.ToSharedRef());
     }
 
+    ReportFormViewportContent.Reset();
     ReportFormWidget.Reset();
 }
 

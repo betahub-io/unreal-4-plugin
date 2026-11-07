@@ -6,6 +6,7 @@
 
 class UBH_LogCapture;
 class SBH_ReportForm;
+class SWidget;
 class APlayerController;
 class UGameViewportClient;
 struct FBH_SavedInputState;
@@ -50,6 +51,10 @@ private:
     UBH_LogCapture* LogCapture;
 
     TSharedPtr<SBH_ReportForm> ReportFormWidget;
+
+    /** The viewport holds the form through this weak wrapper; removing the form from the viewport needs the wrapper, not the form. */
+    TSharedPtr<SWidget> ReportFormViewportContent;
+
     FString LastScreenshotPath;
 
     /** Input state from before the form opened; null when there is nothing to restore. */

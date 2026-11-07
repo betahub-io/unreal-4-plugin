@@ -28,6 +28,7 @@ In-game bug reporting and feedback collection plugin for Unreal Engine 4.27. Int
 | `bSpawnServiceOnStartup` | Auto-start the service (default: true) |
 | `bEnableShortcut` | Enable keyboard shortcut (default: true) |
 | `ShortcutKey` | Key to open report form (default: F12) |
+| `ReportFormZOrder` | Z-order of the report form in the game viewport (default: 1000) |
 
 ## Usage
 
@@ -54,6 +55,8 @@ To run your own logic after the form closes, bind to `OnReportFormClosed` (Bluep
 ```cpp
 BugReporter->OnReportFormClosed.AddDynamic(this, &UMyPauseMenu::HandleReportFormClosed);
 ```
+
+**Form above your menus:** the form is drawn above viewport widgets with a lower `ReportFormZOrder`. UMG's *Add to Viewport* places a widget at its Z-order + 10, so the default 1000 keeps the form above menus added with Z-order below 990. Raise the setting if your menus use a higher Z-order.
 
 ## Requirements
 
