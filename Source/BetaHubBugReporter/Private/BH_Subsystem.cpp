@@ -4,9 +4,10 @@
 #include "BH_ScreenshotCapture.h"
 #include "SBH_ReportForm.h"
 #include "BH_Log.h"
+#include "Components/InputComponent.h"
+#include "Containers/Ticker.h"
 #include "Engine/Engine.h"
 #include "Engine/GameViewportClient.h"
-#include "TimerManager.h"
 #include "GameFramework/PlayerController.h"
 #include "Widgets/SWeakWidget.h"
 #include "Framework/Application/SlateApplication.h"
@@ -64,24 +65,20 @@ void UBH_Subsystem::Initialize(FSubsystemCollectionBase& Collection)
         LogCapture = NewObject<UBH_LogCapture>(this);
         LogCapture->StartCapture();
 
-        // Setup input binding for shortcut
-        if (Settings->bEnableShortcut)
-        {
-            SetupInputBinding();
-        }
+        bBindShortcut = Settings->bEnableShortcut;
     }
+
+    // Packaged games initialize this subsystem on a placeholder world before the first map loads,
+    // and every map load brings a new world and player controller, so check each frame.
+    WorldWatchTickerHandle = FTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateUObject(this, &UBH_Subsystem::TickWorldWatch));
 }
 
 void UBH_Subsystem::Deinitialize()
 {
-    // Clean up actor spawned delegate
-    if (PlayerControllerChangedHandle.IsValid())
+    if (WorldWatchTickerHandle.IsValid())
     {
-        if (UWorld* World = GetWorld())
-        {
-            World->RemoveOnActorSpawnedHandler(PlayerControllerChangedHandle);
-        }
-        PlayerControllerChangedHandle.Reset();
+        FTicker::GetCoreTicker().RemoveTicker(WorldWatchTickerHandle);
+        WorldWatchTickerHandle.Reset();
     }
 
     if (LogCapture)
@@ -120,6 +117,7 @@ void UBH_Subsystem::ShowReportForm()
     }
 
     RemoveReportFormWidget();
+    ReportFormWorld = World;
 
     // Create new Slate widget
     SAssignNew(ReportFormWidget, SBH_ReportForm)
@@ -178,6 +176,7 @@ void UBH_Subsystem::RemoveReportFormWidget()
 
     ReportFormViewportContent.Reset();
     ReportFormWidget.Reset();
+    ReportFormWorld.Reset();
 }
 
 void UBH_Subsystem::SaveInputState(APlayerController* PlayerController, UGameViewportClient& ViewportClient)
@@ -260,62 +259,34 @@ FString UBH_Subsystem::TakeScreenshot()
     return BH_ScreenshotCapture::CaptureScreenshot();
 }
 
-void UBH_Subsystem::SetupInputBinding()
+bool UBH_Subsystem::TickWorldWatch(float DeltaTime)
 {
     UWorld* World = GetWorld();
-    if (!World)
+
+    // The map changed under the open form: the menus it covered are gone, and it would block the new map.
+    if (ReportFormWidget.IsValid() && ReportFormWorld.Get() != World)
     {
-        return;
+        HideReportForm();
     }
 
-    // Try to bind immediately if player controller exists
-    if (APlayerController* PC = World->GetFirstPlayerController())
+    if (bBindShortcut && World)
     {
-        BindShortcutKey(PC);
+        BindShortcutKey(World->GetFirstPlayerController());
     }
 
-    // Listen for new player controllers spawning
-    PlayerControllerChangedHandle = World->AddOnActorSpawnedHandler(
-        FOnActorSpawned::FDelegate::CreateLambda([this](AActor* SpawnedActor)
-        {
-            if (APlayerController* PC = Cast<APlayerController>(SpawnedActor))
-            {
-                // Defer binding to next frame to ensure InputComponent is ready
-                if (UWorld* MyWorld = GetWorld())
-                {
-                    MyWorld->GetTimerManager().SetTimerForNextTick([this, PC]()
-                    {
-                        BindShortcutKey(PC);
-                    });
-                }
-            }
-        })
-    );
-}
-
-void UBH_Subsystem::OnPlayerControllerChanged(APlayerController* NewPlayerController)
-{
-    BindShortcutKey(NewPlayerController);
+    return true;
 }
 
 void UBH_Subsystem::BindShortcutKey(APlayerController* PlayerController)
 {
-    if (!PlayerController)
+    // A player controller gets its input component a few frames after it spawns. Bind once per input component.
+    if (!PlayerController || !PlayerController->InputComponent || PlayerController->InputComponent == ShortcutInputComponent.Get())
     {
         return;
     }
 
-    // Wait for InputComponent to be ready
-    if (!PlayerController->InputComponent)
-    {
-        return;
-    }
-
-    UBH_PluginSettings* Settings = GetMutableDefault<UBH_PluginSettings>();
-    if (!Settings->bEnableShortcut)
-    {
-        return;
-    }
+    const UBH_PluginSettings* Settings = GetDefault<UBH_PluginSettings>();
+    ShortcutInputComponent = PlayerController->InputComponent;
 
     // Bind the shortcut key using a lambda
     FInputKeyBinding KeyBinding(FInputChord(Settings->ShortcutKey), EInputEvent::IE_Pressed);

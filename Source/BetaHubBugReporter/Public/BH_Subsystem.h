@@ -9,6 +9,8 @@ class SBH_ReportForm;
 class SWidget;
 class APlayerController;
 class UGameViewportClient;
+class UInputComponent;
+class UWorld;
 struct FBH_SavedInputState;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FBH_OnReportFormClosed);
@@ -34,13 +36,14 @@ public:
     UFUNCTION(BlueprintCallable, Category = "BetaHub")
     FString TakeScreenshot();
 
-    /** Fires after the report form closes. Mouse cursor and input mode are already restored to their state from before the form opened. */
+    /** Fires after the report form closes. Mouse cursor and input mode are already restored to their state from before the form opened.
+     *  A map change also closes the form; if the player controller that opened it is gone, input is left to the new map. */
     UPROPERTY(BlueprintAssignable, Category = "BetaHub")
     FBH_OnReportFormClosed OnReportFormClosed;
 
 private:
-    void SetupInputBinding();
-    void OnPlayerControllerChanged(APlayerController* NewPlayerController);
+    /** Runs every frame: the game instance changes worlds on every map load, so the shortcut and the open form follow the current world. */
+    bool TickWorldWatch(float DeltaTime);
     void BindShortcutKey(APlayerController* PlayerController);
 
     void SaveInputState(APlayerController* PlayerController, UGameViewportClient& ViewportClient);
@@ -60,5 +63,13 @@ private:
     /** Input state from before the form opened; null when there is nothing to restore. */
     TSharedPtr<FBH_SavedInputState> SavedInputState;
 
-    FDelegateHandle PlayerControllerChangedHandle;
+    /** World the open form belongs to; the form closes when the map changes. */
+    TWeakObjectPtr<UWorld> ReportFormWorld;
+
+    /** Input component that holds the shortcut binding; a new player controller gets a new one. */
+    TWeakObjectPtr<UInputComponent> ShortcutInputComponent;
+
+    bool bBindShortcut = false;
+
+    FDelegateHandle WorldWatchTickerHandle;
 };

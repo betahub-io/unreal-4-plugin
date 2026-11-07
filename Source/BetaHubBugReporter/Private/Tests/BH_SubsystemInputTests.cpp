@@ -5,21 +5,27 @@
 
 #include "BH_Subsystem.h"
 #include "BH_PluginSettings.h"
+#include "Components/InputComponent.h"
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
 #include "Engine/GameViewportClient.h"
 #include "Engine/World.h"
 #include "GameFramework/Actor.h"
 #include "GameFramework/PlayerController.h"
+#include "Kismet/GameplayStatics.h"
 #include "Layout/Children.h"
 #include "Widgets/Layout/SBorder.h"
 
 // These tests need a running game world: run them with -game, e.g.
 // UE4Editor.exe <Project>.uproject -game -ExecCmds="Automation RunTests BetaHub;Quit"
+// Packaged games start like -game: the game instance begins on a placeholder world and loads the map afterwards.
 
 namespace
 {
     constexpr uint32 GameTestFlags =EAutomationTestFlags::ClientContext | EAutomationTestFlags::ProductFilter;
+
+    constexpr double MapLoadTimeoutSeconds = 30.0;
+    constexpr double InputTimeoutSeconds = 5.0;
 
     struct FBH_GameFixture
     {
@@ -28,17 +34,21 @@ namespace
         UBH_Subsystem* Subsystem = nullptr;
     };
 
-    bool GetGameFixture(FAutomationTestBase& Test, FBH_GameFixture& OutFixture)
+    UWorld* FindGameWorld()
     {
-        UWorld* World = nullptr;
         for (const FWorldContext& Context : GEngine->GetWorldContexts())
         {
             if (Context.WorldType == EWorldType::Game)
             {
-                World = Context.World();
-                break;
+                return Context.World();
             }
         }
+        return nullptr;
+    }
+
+    bool GetGameFixture(FAutomationTestBase& Test, FBH_GameFixture& OutFixture)
+    {
+        UWorld* World = FindGameWorld();
         if (!Test.TestNotNull(TEXT("Game world (run with -game)"), World))
         {
             return false;
@@ -134,6 +144,138 @@ namespace
         Fixture.Subsystem->HideReportForm();
         Fixture.ViewportClient->RemoveViewportWidgetContent(Menu);
         return bFormAbove;
+    }
+
+    bool IsReportFormOpen()
+    {
+        UGameViewportClient* ViewportClient = GEngine->GameViewport;
+        if (!ViewportClient)
+        {
+            return false;
+        }
+
+        // A throwaway widget gives access to the viewport overlay.
+        const TSharedRef<SWidget> Probe = AddMenuToViewport(*ViewportClient, 0);
+        const TSharedPtr<SWidget> Overlay = Probe->GetParentWidget();
+        const bool bOpen = Overlay.IsValid() && FindReportFormOverlaySlot(*Overlay) != INDEX_NONE;
+        ViewportClient->RemoveViewportWidgetContent(Probe);
+        return bOpen;
+    }
+
+    APlayerController* GetGamePlayerController()
+    {
+        UWorld* World = FindGameWorld();
+        return World ? World->GetFirstPlayerController() : nullptr;
+    }
+
+    int32 CountShortcutBindings(const APlayerController& PlayerController)
+    {
+        if (!PlayerController.InputComponent)
+        {
+            return 0;
+        }
+        const FKey ShortcutKey = GetDefault<UBH_PluginSettings>()->ShortcutKey;
+        return PlayerController.InputComponent->KeyBindings.FilterByPredicate([&ShortcutKey](const FInputKeyBinding& Binding)
+        {
+            return Binding.Chord.Key == ShortcutKey;
+        }).Num();
+    }
+
+    void PressShortcutKey(APlayerController& PlayerController)
+    {
+        const FKey ShortcutKey = GetDefault<UBH_PluginSettings>()->ShortcutKey;
+        PlayerController.InputKey(ShortcutKey, IE_Pressed, 1.0f, false);
+        PlayerController.InputKey(ShortcutKey, IE_Released, 0.0f, false);
+    }
+
+    // Latent step: waits until Condition holds; fails the test after Timeout.
+    class FBH_WaitForCommand : public IAutomationLatentCommand
+    {
+    public:
+        FBH_WaitForCommand(FAutomationTestBase& InTest, const TCHAR* InWhat, double InTimeoutSeconds, TFunction<bool()> InCondition)
+            : Test(InTest), What(InWhat), TimeoutSeconds(InTimeoutSeconds), Condition(MoveTemp(InCondition))
+        {
+        }
+
+        virtual bool Update() override
+        {
+            if (Condition())
+            {
+                return true;
+            }
+            if (FPlatformTime::Seconds() - StartTime > TimeoutSeconds)
+            {
+                Test.AddError(FString::Printf(TEXT("Timed out waiting for %s"), *What));
+                return true;
+            }
+            return false;
+        }
+
+    private:
+        FAutomationTestBase& Test;
+        FString What;
+        double TimeoutSeconds;
+        TFunction<bool()> Condition;
+    };
+
+    void WaitFor(FAutomationTestBase& Test, const TCHAR* What, double TimeoutSeconds, TFunction<bool()> Condition)
+    {
+        FAutomationTestFramework::Get().EnqueueLatentCommand(MakeShared<FBH_WaitForCommand>(Test, What, TimeoutSeconds, MoveTemp(Condition)));
+    }
+
+    void Then(TFunction<void()> Step)
+    {
+        FAutomationTestFramework::Get().EnqueueLatentCommand(MakeShared<FFunctionLatentCommand>([Step]()
+        {
+            Step();
+            return true;
+        }));
+    }
+
+    // Reloads the current map, the way a level change or joining a server replaces the world.
+    void ReloadMapAndWait(FAutomationTestBase& Test)
+    {
+        UWorld* OldWorld = FindGameWorld();
+        const TWeakObjectPtr<UWorld> WeakOldWorld = OldWorld;
+        UGameplayStatics::OpenLevel(OldWorld, FName(*OldWorld->GetOutermost()->GetName()));
+
+        WaitFor(Test, TEXT("the map to reload"), MapLoadTimeoutSeconds, [WeakOldWorld]()
+        {
+            UWorld* World = FindGameWorld();
+            return World && World != WeakOldWorld.Get() && World->AreActorsInitialized() && World->GetFirstPlayerController();
+        });
+    }
+
+    // Presses the shortcut once it is bound and expects the form to open.
+    void ExpectShortcutOpensForm(FAutomationTestBase& Test)
+    {
+        WaitFor(Test, TEXT("the shortcut to be bound"), InputTimeoutSeconds, []()
+        {
+            APlayerController* PlayerController = GetGamePlayerController();
+            return PlayerController && CountShortcutBindings(*PlayerController) > 0;
+        });
+        Then([&Test]()
+        {
+            APlayerController* PlayerController = GetGamePlayerController();
+            if (Test.TestNotNull(TEXT("Player controller"), PlayerController))
+            {
+                Test.TestEqual(TEXT("Shortcut bindings on the player controller"), CountShortcutBindings(*PlayerController), 1);
+                EnterGameplayState(PlayerController);
+                PressShortcutKey(*PlayerController);
+            }
+        });
+        WaitFor(Test, TEXT("the shortcut to open the report form"), InputTimeoutSeconds, []()
+        {
+            return IsReportFormOpen();
+        });
+        Then([]()
+        {
+            UWorld* World = FindGameWorld();
+            if (UBH_Subsystem* Subsystem = World ? World->GetGameInstance()->GetSubsystem<UBH_Subsystem>() : nullptr)
+            {
+                Subsystem->HideReportForm();
+            }
+        });
     }
 }
 
@@ -286,6 +428,59 @@ bool FBH_CloseRemovesViewportSlotTest::RunTest(const FString& Parameters)
     }
 
     Fixture.ViewportClient->RemoveViewportWidgetContent(Menu);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FBH_ShortcutOpensFormTest, "BetaHub.Shortcut.OpensReportForm", GameTestFlags)
+
+bool FBH_ShortcutOpensFormTest::RunTest(const FString& Parameters)
+{
+    FBH_GameFixture Fixture;
+    if (!GetGameFixture(*this, Fixture))
+    {
+        return false;
+    }
+
+    ExpectShortcutOpensForm(*this);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FBH_ShortcutAfterMapLoadTest, "BetaHub.Shortcut.OpensReportFormAfterMapLoad", GameTestFlags)
+
+bool FBH_ShortcutAfterMapLoadTest::RunTest(const FString& Parameters)
+{
+    FBH_GameFixture Fixture;
+    if (!GetGameFixture(*this, Fixture))
+    {
+        return false;
+    }
+
+    ReloadMapAndWait(*this);
+    ExpectShortcutOpensForm(*this);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FBH_FormClosesOnMapLoadTest, "BetaHub.ReportForm.ClosesOnMapLoad", GameTestFlags)
+
+bool FBH_FormClosesOnMapLoadTest::RunTest(const FString& Parameters)
+{
+    FBH_GameFixture Fixture;
+    if (!GetGameFixture(*this, Fixture))
+    {
+        return false;
+    }
+
+    UBH_Subsystem* Subsystem = Fixture.Subsystem;
+    Subsystem->ShowReportForm();
+    ReloadMapAndWait(*this);
+    WaitFor(*this, TEXT("the report form to close after the map change"), InputTimeoutSeconds, []()
+    {
+        return !IsReportFormOpen();
+    });
+    Then([Subsystem]()
+    {
+        Subsystem->HideReportForm();
+    });
     return true;
 }
 
