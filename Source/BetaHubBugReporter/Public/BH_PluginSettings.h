@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Engine/DeveloperSettings.h"
+#include "InputCoreTypes.h"
 #include "BH_PluginSettings.generated.h"
 
 UCLASS(Config=Game, defaultconfig, meta=(DisplayName="BetaHub Bug Reporter"))

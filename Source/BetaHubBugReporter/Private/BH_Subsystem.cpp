@@ -6,6 +6,7 @@
 #include "BH_Log.h"
 #include "Engine/Engine.h"
 #include "Engine/GameViewportClient.h"
+#include "TimerManager.h"
 #include "GameFramework/PlayerController.h"
 #include "Widgets/SWeakWidget.h"
 #include "Framework/Application/SlateApplication.h"
